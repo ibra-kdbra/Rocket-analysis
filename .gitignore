@@ -1,0 +1,12 @@
+.cache
+.qmake*
+target
+compile_commands.json
+release
+debug
+docs/doxygen
+*.user
+*.json
+*.msh
+*.obj
+*.mtl
