@@ -26,3 +26,7 @@ The project can be easily built with the `Makefile`. The `Makefile` is written w
 
 Open `burnback-3d.pro` with QtCreator, set your compiling options if needed, and runs directly by clicking the play button at bottom-left.
 
+
+## Having some bugs
+
+This repo is having some changes to it, ?It will have some conflicts in the future, trying to fix the bugs
