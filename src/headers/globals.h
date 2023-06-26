@@ -25,14 +25,22 @@ inline std::vector<double> angleTotal;
 inline std::map<uint, Boundary> boundaries;
 inline std::vector<std::vector<uint>> nodeConditions;
 inline std::vector<uint> boundaryConditions;
-inline std::map<uint, std::array<double, 3>> symmetryConditions;
+inline std::map<uint, std::vector<std::array<double, 3>>> symmetryConditions;
 inline ComputationData computationData;
 
 inline double timeStep;
 inline double timeTotal;
-inline std::vector<double> errorIter;
 
 inline uint currentIter = 0;
 inline bool running = false;
 
 inline uint drawCount = 0;
+
+inline std::vector<double> recession;
+inline std::array<std::vector<double>, 2> burningArea;
+inline std::vector<double> errorIter;
+
+inline bool anisotropic;
+inline std::vector<std::array<std::array<double, 3>, 3>> recessionMatrix;
+inline std::vector<std::array<double, 6>> recessionAnisotropic;
+inline double maxRecession;
