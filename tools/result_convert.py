@@ -1,6 +1,7 @@
 import sys
 import json
 import meshio
+import numpy
 
 def print_help():
 	print('''
@@ -40,9 +41,8 @@ results = data['burnbackResults']
 # correcting index
 print('Correcting index')
 tetra = mesh['tetrahedra']
-for entry in tetra:
-	for i in range(4):
-		entry[i] -= 1
+
+tetra = (numpy.array(tetra) - 1).tolist()
 
 point = mesh['nodes']
 cells = [
@@ -50,15 +50,20 @@ cells = [
 	("tetra", mesh['tetrahedra']),
 ]
 point_data = {
-	"uVertex": results['uVertex'],
+	"time": results['uVertex'],
 	"fluxHamiltonian": results['fluxes'][0],
 	"fluxDiffusive": results['fluxes'][1],
+}
+
+cell_data = {
+	"gradient": [results['duVertex']],
 }
 
 mesh = meshio.Mesh(
 	points=point,
 	cells=cells,
 	point_data=point_data,
+	cell_data=cell_data,
 )
 
 print('Writing to ' + output_name)
