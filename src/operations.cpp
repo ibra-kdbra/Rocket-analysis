@@ -85,7 +85,7 @@ void computeGeometry() {
 			tetrahedraGeometry.vertexWeight[tetrahedra][vertex] = tetrahedraGeometry.solidAngle[tetrahedra][vertex] / angleTotal[node];
 		}
 	}
-	timeStep *= input.cfl / 6;
+	timeStep *= input.cfl / (6 * maxRecession);
 }
 }
 //}}}
@@ -127,7 +127,7 @@ void computeMeanGradient() {
 	}
 }
 void computeFluxes() {
-	computationData.hamiltonArg = vector<array<double, 3>>(mesh.nodes.size());
+	computationData.vertexGradient = vector<array<double, 3>>(mesh.nodes.size());
 	computationData.flux.fill(vector<double>(mesh.nodes.size()));
 
 	for (uint tetrahedra = 0; tetrahedra < mesh.tetrahedra.size(); ++tetrahedra) {
@@ -135,8 +135,8 @@ void computeFluxes() {
 		for (uint vertex = 0; vertex < 4; ++vertex) {
 			const auto node = mesh.tetrahedra[tetrahedra][vertex] - 1;
 			const auto &weight = tetrahedraGeometry.vertexWeight[tetrahedra][vertex];
-			auto &hamiltonArg = computationData.hamiltonArg[node];
-			hamiltonArg = summation(hamiltonArg, multiplication(gradient, weight));
+			auto &vertexGradient = computationData.vertexGradient[node];
+			vertexGradient = summation(vertexGradient, multiplication(gradient, weight));
 		}
 	}
 
@@ -146,11 +146,28 @@ void computeFluxes() {
 		uint vertexIndex = 0;
 		for (auto &_node: mesh.tetrahedra[tetrahedra]) {
 			const auto node = _node - 1;
+			auto &vertexGradient = computationData.vertexGradient[node];
+			const auto &boundaryType = boundaryConditions[node];
+			if (boundaryType == SYMMETRY || boundaryType == OUTLET_SYMMETRY) {
+				auto &symmetryVector = symmetryConditions[node];
+				if (symmetryVector.size() == 1) {
+					vertexGradient = crossProduct(crossProduct(symmetryVector[0], vertexGradient), symmetryVector[0]);
+				} else {
+					auto &symmetry1 = symmetryVector[0];
+					auto &symmetry2 = symmetryVector[1];
+
+					// vertexGradient = crossProduct(crossProduct(crossProduct(symmetry2, crossProduct(symmetry1, vertexGradient)), symmetry1), symmetry2);
+					auto s1 = multiplication(symmetry1, scalarProduct(vertexGradient, symmetry1));
+					auto s2 = multiplication(symmetry2, scalarProduct(vertexGradient, symmetry2));
+					vertexGradient = subtraction(vertexGradient, summation(s1, s2));
+				}
+			}
 			// const auto &area = tetrahedraGeometry.triangleArea[tetrahedra][vertexIndex];
 			const auto &normal = tetrahedraGeometry.normal[tetrahedra][vertexIndex];
 			const auto &weight = tetrahedraGeometry.vertexWeight[tetrahedra][vertexIndex];
 			auto &flux = computationData.flux[1][node];
-			flux += scalarProduct(gradient, normal) * weight;
+			auto subtractedGradient = subtraction(gradient, vertexGradient);
+			flux += scalarProduct(subtractedGradient, normal) * weight;
 			vertexIndex++;
 		}
 	}
@@ -164,32 +181,25 @@ void ApplyBoundaryConditions(){
 	for (auto &type: boundaryConditions) {
 		auto &fluxHamiltonian = computationData.flux[0][nodeIndex];
 		auto &fluxDiffusive = computationData.flux[1][nodeIndex];
-		auto hamiltonArg = computationData.hamiltonArg[nodeIndex];
+		auto hamiltonArg = computationData.vertexGradient[nodeIndex];
 
 		switch (type) {
 			case NO_CONDITION:
-				fluxHamiltonian = 1 - magnitude(hamiltonArg);
+				fluxHamiltonian = 1 - recession[nodeIndex] * magnitude(hamiltonArg);
 				break;
 			case INLET:
 				fluxHamiltonian = 0;
 				fluxDiffusive = 0;
 				break;
 			case OUTLET:
-				fluxHamiltonian = 1 - magnitude(hamiltonArg);
-				// fluxDiffusive = 0;
+				fluxHamiltonian = 1 - recession[nodeIndex] * magnitude(hamiltonArg);
 				break;
 			case SYMMETRY: {
-				auto &symmetryVector = symmetryConditions[nodeIndex];
-				hamiltonArg = crossProduct(crossProduct(symmetryVector, hamiltonArg), symmetryVector);
-				fluxHamiltonian = 1 - magnitude(hamiltonArg);
-				// fluxDiffusive *= 2;
+				fluxHamiltonian = 1 - recession[nodeIndex] * magnitude(hamiltonArg);
 				break;
 			}
 			case OUTLET_SYMMETRY: {
-				auto &symmetryVector = symmetryConditions[nodeIndex];
-				hamiltonArg = crossProduct(crossProduct(symmetryVector, hamiltonArg), symmetryVector);
-				fluxHamiltonian = 1 - magnitude(hamiltonArg);
-				// fluxDiffusive *= 2;
+				fluxHamiltonian = 1 - recession[nodeIndex] * magnitude(hamiltonArg);
 				break;
 			}
 			default:
@@ -202,13 +212,35 @@ void ApplyBoundaryConditions(){
 //}}}
 
 namespace Nodes {//{{{	
+double getMaxRecession() {
+	auto maxRecession = 0.0;
+	if (anisotropic) {
+		for (auto &recession : recessionAnisotropic) {
+			auto &recession1 = recession[0];
+			auto &recession2 = recession[1];
+			maxRecession = max(maxRecession, max(recession1, recession2));
+		}
+	} else {
+		maxRecession = *max_element(recession.begin(), recession.end());
+	}
+	return maxRecession;
+}
 void computeResults() {
 	for (uint node = 0; node < mesh.nodes.size(); ++node) {
 		auto &uVertex = computationData.uVertex[node];
 		auto &flux = computationData.flux;
-		uVertex += timeStep * (flux[0][node] + input.diffusiveWeight * flux[1][node]);
+		uVertex += timeStep * (flux[0][node] + input.diffusiveWeight * recession[node] * flux[1][node]);
 		timeTotal += timeStep;
 	}
+}
+
+double getError() {
+	auto error = 0.0;
+	for (uint node = 0; node < mesh.nodes.size(); ++node)
+		error += pow(computationData.flux[0][node], 2);
+
+	error = sqrt(error) / mesh.nodes.size();
+	return error;
 }
 
 void setBoundaryConditions() {
@@ -245,10 +277,11 @@ void setBoundaryConditions() {
 					};
 
 					if (symmetryConditions.find(node) == symmetryConditions.end()) {
-						symmetryConditions.insert(pair<uint, array<double, 3>>(node, symmetryVector));
+						symmetryConditions.insert(pair<uint, vector<array<double, 3>>>(node, {symmetryVector}));
 					} else {
-						auto &symmetryVectorNode = symmetryConditions[node];
-						symmetryVectorNode = Vectors::normalization(Vectors::subtraction(symmetryVectorNode, symmetryVector));
+						if (symmetryConditions[node].size() > 2)
+							throw invalid_argument("More than 2 symmetry vector in node " + to_string(node) + ". This is a point.");
+						symmetryConditions[node].push_back(symmetryVector);
 					}
 					break;
 				}
@@ -260,3 +293,48 @@ void setBoundaryConditions() {
 }
 }
 //}}}
+
+namespace Anisotropic {//{{{
+void computeMatrix() {
+	recessionMatrix = vector<array<array<double, 3>, 3>>(mesh.nodes.size());
+	for (uint node = 0; node < mesh.nodes.size(); ++node) {
+		auto &recession = recessionAnisotropic[node];
+		auto &recession1 = recession[0];
+		auto &recession2 = recession[1];
+		auto &recession3 = recession[2];
+
+		auto rotationX = recession[3] * M_PI / 180;
+		auto rotationY = recession[4] * M_PI / 180;
+		auto rotationZ = recession[5] * M_PI / 180;
+
+		array<array<double, 3>, 3> rotationMatrix = {{
+			{cos(rotationY) * cos(rotationZ), sin(rotationX) * sin(rotationY) * cos(rotationZ) - cos(rotationX) * sin(rotationZ), cos(rotationX) * sin(rotationY) * cos(rotationZ) + sin(rotationX) * sin(rotationZ)},
+			{cos(rotationY) * sin(rotationZ), sin(rotationX) * sin(rotationY) * sin(rotationZ) + cos(rotationX) * cos(rotationZ), cos(rotationX) * sin(rotationY) * sin(rotationZ) - sin(rotationX) * cos(rotationZ)},
+			{- sin(rotationY), sin(rotationX) * cos(rotationY), cos(rotationX) * cos(rotationY)}
+		}};
+
+		array<array<double, 3>, 3> rec = {{
+			{recession1, 0, 0},
+			{0, recession2, 0},
+			{0, 0, recession3}
+		}};
+
+		auto rotationMatrixT = Matrix::transpose(rotationMatrix);
+
+		auto _op = Matrix::multiplication(rotationMatrixT, rec);
+		recessionMatrix[node] = Matrix::multiplication(_op, rotationMatrix);
+	}
+}
+void computeRecession() {
+		for (uint node = 0; node < mesh.nodes.size(); ++node) {
+		array<array<double, 1>, 3> flowDirection = {{
+			{computationData.gradient[node][0]},
+			{computationData.gradient[node][1]},
+			{computationData.gradient[node][2]}
+		}};
+		auto &matrix = recessionMatrix[node];
+		auto effectiveRecession = Matrix::multiplication(matrix, flowDirection);
+		recession[node] = sqrt(pow(effectiveRecession[0][0], 2) + pow(effectiveRecession[1][0], 2) + pow(effectiveRecession[2][0], 2));
+	}
+}
+}//}}}
