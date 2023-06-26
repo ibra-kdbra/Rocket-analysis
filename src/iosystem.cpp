@@ -23,7 +23,6 @@ void readInput() {//{{{
 		input.targetIter = 300;
 
 	input.diffusiveWeight = root->findChild<QObject*>("diffusiveWeight")->property("text").toDouble();
-	input.diffusiveMethod = root->findChild<QObject*>("diffusiveMethod")->property("currentIndex").toInt();
 }
 //}}}
 
@@ -89,12 +88,36 @@ void readMesh(std::string &filepath) {
 		return;
 	}
 
+	try {
+		try {
+			auto recessionCondition = conditions["recession"].get<vector<double>>();
+			if (recessionCondition.size() == 0)
+				recession = vector<double>(mesh.nodes.size(), 1);
+			else
+				recession = recessionCondition;
+			recessionAnisotropic.clear();
+			recessionMatrix.clear();
+			anisotropic = false;
+		} catch(...) {
+			auto recessionCondition = conditions["recession"].get<vector<array<double, 6>>>();
+			recession = vector<double>(mesh.nodes.size());
+			recessionAnisotropic = recessionCondition;
+			anisotropic = true;
+		}
+	} catch(...) {
+		recession = vector<double>(mesh.nodes.size(), 1);
+		recessionAnisotropic.clear();
+		recessionMatrix.clear();
+		anisotropic = false;
+		throw std::invalid_argument("Unable to read recession conditions from JSON file. Defaulting to isotropic recession with value 1.");
+	}
 	tetrahedraGeometry = TetrahedraGeometry(mesh.tetrahedra.size());
 	angleTotal = std::vector<double>(mesh.nodes.size());
 }
 void writeData(std::string  &filepath, std::string  &origin, bool &pretty) {
 	fstream originalFile(origin);
 	json results;
+
 	results["uVertex"] = computationData.uVertex;
 	results["duVertex"] = computationData.gradient;
 	results["fluxes"] = computationData.flux;
@@ -123,7 +146,74 @@ void writeData(std::string  &filepath, std::string  &origin, bool &pretty) {
 	}
 }
 
-void updateBoundaries(std::string  &filepath, bool &pretty);
+void updateBoundaries(string &filepath, bool &pretty) {
+	fstream originalFile(filepath);
+	json jsonFile;
+	try {
+		jsonFile = json::parse(originalFile);
+	} catch (...) {
+		throw std::invalid_argument("Unable to parse JSON file. Invalid JSON file?");
+		return;
+	}
+
+	json updatedBoundaries;
+	for (auto &[key, boundary] : boundaries) {
+		if (key == 0)
+			continue;
+		auto &boundaryTag = key;
+		auto boundaryValue = boundary.value;
+		auto boundaryType = "";
+		switch (boundary.type) {
+			case 1:
+				boundaryType = "inlet";
+				break;
+			case 2:
+				boundaryType = "outlet";
+				break;
+			case 3:
+				boundaryType = "symmetry";
+				boundaryValue[0] = boundaryValue[0] * 180 / M_PI;
+				boundaryValue[1] = boundaryValue[1] * 180 / M_PI;
+				break;
+		};
+
+		auto &boundaryDescription = boundary.description;
+		updatedBoundaries.push_back({{"tag", boundaryTag}, {"type", boundaryType}, {"value", boundaryValue}, {"description", boundaryDescription}});
+	}
+	jsonFile["conditions"]["boundary"] = updatedBoundaries;
+
+	ofstream file(filepath);
+	if (pretty)
+		file << setw(4) << jsonFile << endl;
+	else
+		file << jsonFile << endl;
+}
+
+void updateRecessions(std::string &filepath, bool &pretty) {
+	fstream originalFile(filepath);
+	json jsonFile;
+	try {
+		jsonFile = json::parse(originalFile);
+	} catch (...) {
+		throw std::invalid_argument("Unable to parse JSON file. Invalid JSON file?");
+		return;
+	}
+
+	json updatedRecessions;
+	if (anisotropic) {
+		updatedRecessions = recessionAnisotropic;
+	} else {
+		updatedRecessions = recession;
+	}
+	jsonFile["conditions"]["recession"] = updatedRecessions;
+
+	ofstream file(filepath);
+	if (pretty)
+		file << setw(4) << jsonFile << endl;
+	else
+		file << jsonFile << endl;
+}
+
 }//}}}
 
 namespace WriteMesh {
@@ -143,10 +233,10 @@ void IsocontourSurface(double value, std::string filepath) {
 	}
 	// write faces
 	for (auto &triangle: data.triangles) {
-		file << "f";
-		for (auto &node: triangle)
-			file << " " << node + 1;
-		file << endl;
+		file << "f" << " " << triangle[0] + 1 << " " << triangle[2] + 1 << " " << triangle[1] + 1 << endl;
+		// for (auto &node: triangle)
+		// 	file << " " << node + 1;
+		// file << endl;
 	}
 };
 
